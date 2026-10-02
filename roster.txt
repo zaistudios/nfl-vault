@@ -1,23 +1,24 @@
 # Fantasy Footballz (Yahoo 1433436) - Zane's roster.
 # One player per line. '#' starts a comment. Edit after every add/drop.
 # Names must match nflverse; run `uv run weekly.py --selftest` to catch typos.
+# Updated 2026-10-01 from Team_Wk4.pdf.
 
 # --- starters ---
-Lamar Jackson
+Trevor Lawrence
 Kenneth Walker III
-De'Von Achane
+Chuba Hubbard
 Ja'Marr Chase
 Nico Collins
-Kyle Pitts
+Juwan Johnson
 Javonte Williams
 
 # --- bench ---
-Jadarian Price
-Quinshon Judkins
+Dalton Kincaid
+Lamar Jackson
 Tetairoa McMillan
 Ladd McConkey
-Jayden Daniels
-Terry McLaurin
+Jadarian Price
+Quinshon Judkins
 
 # K and DST are not in nflverse player_stats the same way and are streamed anyway,
-# so they are deliberately left out: Trey Smack (K, GB), Giants (DEF).
+# so they are deliberately left out: Jake Bates (K, DET), Vikings (DEF).
