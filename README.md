@@ -7,27 +7,28 @@ my roster's snap share and target share trends, who's picking up a role and migh
 a waiver claim, and who's losing one. Scoring is hardcoded to my league (half PPR, 4pt
 passing TD, -1 INT, -2 fumble lost, 6 for return TDs).
 
-`yahoo.py` reads my Yahoo leagues for matchup scores, top scorers and standings. Doesn't
-work yet - Yahoo makes you apply for Fantasy API access now and I'm waiting on that.
+`yahoo.py --check` asks Yahoo whether those waiver candidates are actually available in
+my leagues, prints a table, and saves nothing. Personal Use under Yahoo's Fantasy API
+agreement, which forbids storing their data, so there's no sync, cache, or recap file.
+Run it in your own terminal.
 
 ## running it
 
 Needs [uv](https://docs.astral.sh/uv/). Deps are declared in the scripts, so there's no
 venv or requirements.txt to deal with.
 
-    uv run weekly.py --season 2025    # season hasn't started, use last year
+    uv run weekly.py                  # report into the vault
     uv run weekly.py --selftest       # checks the data and my scoring math
     uv run weekly.py --export         # dump all nflverse seasons to db/
+    uv run yahoo.py --check           # which of the report's risers I can claim
+    uv run yahoo.py --selftest        # offline; fails if --check ever writes a file
 
-Roster is `roster.txt`, one name per line.
+Roster is `roster.txt`, one name per line, kept by hand.
 
-Once Yahoo access comes through:
+Yahoo login, once, from this folder (3.11 because the login's localhost listener uses
+`ssl.wrap_socket`, removed in 3.12):
 
-    uv run yahoo.py --sync
-    uv run weekly.py --roster roster_1433436.txt --exclude rostered_1433436.txt
-
-The `--exclude` bit drops players who are already rostered somewhere in the league, so
-the waiver list only shows people I can actually claim.
+    uvx --python 3.11 --from yahoofantasy yahoofantasy login
 
 ## db/
 

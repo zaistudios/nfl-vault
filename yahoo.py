@@ -2,60 +2,67 @@
 # requires-python = ">=3.11"
 # dependencies = ["yahoofantasy>=1.4.9"]
 # ///
-"""Read my Yahoo leagues: rosters, matchups, who scored what.
+"""Are my waiver candidates actually available? Asks Yahoo, prints, saves nothing.
 
-    uv run yahoo.py --probe     # see what Yahoo actually returns
-    uv run yahoo.py --sync      # roster_<id>.txt + rostered_<id>.txt for weekly.py
-    uv run yahoo.py --recap     # week recap for every league, [--week N]
+    uv run yahoo.py --check             # candidates from the weekly report's riser table
+    uv run yahoo.py --check "DJ Moore"  # or name them
+    uv run yahoo.py --probe             # field names and types only, no values
+    uv run yahoo.py --selftest          # offline: parsing + "writes nothing"
 
-Auth is handled by `uvx --from yahoofantasy yahoofantasy login` (needs a Yahoo dev
-app with redirect https://localhost:8000). Fantasy API access has to be approved by
-Yahoo first: https://sports.yahoo.com/developer/access/
+Personal Use under the Yahoo Fantasy API Access and Use Agreement (2026-09-13).
+The rules this file is built around (vault: NFL Fantasy Builder - Compliant Yahoo Concept):
+  - nothing Yahoo returns is written to disk (s2c-vii) - the library's response cache is off
+  - only the named candidates are looked up, never a whole league (s2c-x)
+  - attribution under every output (cover page)
+  - run it in your own terminal, not through an AI assistant (s3e)
 
-Untested against a live account - waiting on that approval. Attributes are read
-through g() so Yahoo renaming a field gives "?" rather than a crash.
+Auth: `uvx --python 3.11 --from yahoofantasy yahoofantasy login`, run from this folder.
+The .yahoofantasy file it writes holds credentials only.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import quote
 
 HERE = Path(__file__).parent
-VAULT = Path.home() / "Documents" / "brain" / "ZAI" / "life-admin" / "Process"
-RECAP = VAULT / "Fantasy Football 2026 - Weekly Recap.md"
+REPORT = Path.home() / "Documents" / "brain" / "ZAI" / "life-admin" / "Process" / "Fantasy Football 2026 - Weekly Report.md"
 SEASON_DEFAULT = date.today().year if date.today().month >= 9 else date.today().year - 1
+ATTRIBUTION = "Fantasy data provided by Yahoo Fantasy - https://football.fantasysports.yahoo.com/"
+
+SUFFIXES = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
 
 
-def g(obj, *names, default=None):
-    """First attribute that exists. Yahoo's fields are built from XML at runtime,
-    so they are not guaranteed and differ between league types."""
-    for n in names:
-        cur, ok = obj, True
-        for part in n.split("."):
-            if not hasattr(cur, part):
-                ok = False
-                break
-            cur = getattr(cur, part)
-        if ok and cur is not None:
-            return cur
-    return default
+def norm(name: str) -> str:
+    # ponytail: copy of weekly.norm - importing weekly drags in polars/nflreadpy for 3 lines
+    n = name.lower().replace(".", "").replace("'", "").replace("-", " ")
+    return " ".join(SUFFIXES.sub("", n).split())
 
 
 def connect():
     try:
         from yahoofantasy import Context
     except ImportError:
-        sys.exit("pip/uv could not load yahoofantasy. Run via: uv run yahoo.py")
+        sys.exit("uv could not load yahoofantasy. Run via: uv run yahoo.py")
+
+    class NoCache(Context):
+        """Context that never persists Yahoo responses (s2c-vii). Only the login
+        credentials in .yahoofantasy are read; nothing is ever written."""
+
+        def _load(self, persist_path, default, ttl=None):
+            return super()._load(persist_path, default, ttl=-1) if persist_path == "auth" else default
+
+        def _save(self, persist_path, persist_val):
+            pass
+
     try:
-        return Context()
+        return NoCache()
     except ValueError as e:
-        sys.exit(
-            f"{e}\n\nNot logged in yet. See the setup block at the top of this file:\n"
-            "  uvx --from yahoofantasy yahoofantasy login"
-        )
+        sys.exit(f"{e}\n\nNot logged in. From this folder:\n  uvx --python 3.11 --from yahoofantasy yahoofantasy login")
 
 
 def leagues(ctx, season: int):
@@ -67,189 +74,124 @@ def leagues(ctx, season: int):
         games["nfl"][str(season)] = int(_find_game_id("nfl", season, ctx))
     ls = ctx.get_leagues("nfl", season)
     if not ls:
-        sys.exit(f"No NFL leagues found for {season}. Wrong season, or the app lacks Fantasy Sports permission.")
+        sys.exit(f"No NFL leagues found for {season}.")
     return ls
 
 
-def my_team(league):
-    """The team owned by the logged-in user."""
-    for t in league.teams():
-        if str(g(t, "is_owned_by_current_login", default="0")) == "1":
-            return t
-    return None
+def candidates() -> list[str]:
+    """Player names from the riser table in the nflverse weekly report (not Yahoo data)."""
+    if not REPORT.exists():
+        sys.exit(f"No weekly report at {REPORT}. Run `uv run weekly.py` first, or name players.")
+    names, inside = [], False
+    for line in REPORT.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            inside = line.startswith("## Role risers")
+        elif inside and line.startswith("| ") and not line.startswith("| Player"):
+            names.append(line.split("|")[1].strip())
+    return names
 
 
-def probe(season: int) -> int:
-    """Dump what Yahoo actually returns, so the recap can be written against facts."""
-    ctx = connect()
-    ls = leagues(ctx, season)
-    print(f"Found {len(ls)} NFL league(s) for {season}\n")
-    for lg in ls:
-        print("=" * 70)
-        print(f"league : {g(lg, 'name')}")
-        print(f"  id   : {g(lg, 'league_id')}   key: {g(lg, 'league_key')}")
-        print(f"  size : {g(lg, 'num_teams')} teams   scoring: {g(lg, 'scoring_type')}")
-        print(f"  week : current={g(lg, 'current_week')}  start={g(lg, 'start_week')}  end={g(lg, 'end_week')}")
-        print(f"  league attrs: {sorted(k for k in vars(lg) if not k.startswith('_'))}")
+def availability(xml: str, name: str) -> str:
+    """FA / waivers / taken / ? for one player, from a players;search=.../ownership response."""
+    from yahoofantasy.api.parse import as_list, get_value, parse_response
 
-        teams = lg.teams()
-        print(f"\n  {len(teams)} teams; first team attrs:")
-        print(f"    {sorted(k for k in vars(teams[0]) if not k.startswith('_'))}")
-        mine = my_team(lg)
-        print(f"  my team: {g(mine, 'name') if mine else 'NOT IDENTIFIED - check is_owned_by_current_login'}")
+    players = (parse_response(xml)["fantasy_content"]["league"].get("players") or {}).get("player")
+    for p in as_list(players or []):
+        if norm(get_value(p["name"]["full"])) == norm(name):
+            kind = get_value(p.get("ownership", {}).get("ownership_type", {"$": "?"}))
+            return {"freeagents": "FA", "waivers": "waivers", "team": "taken"}.get(kind, kind)
+    return "?"
 
-        try:
-            wks = lg.weeks()
-            print(f"\n  {len(wks)} weeks. Last week's first matchup:")
-            m = wks[-1].matchups[0]
-            print(f"    matchup attrs: {sorted(k for k in vars(m) if not k.startswith('_'))}")
-            print(f"    {g(m, 'team1.name')} vs {g(m, 'team2.name')}")
-            print(f"    team1 points: {g(m, 'team1.team_points.total', 'team1_points')}")
-        except Exception as e:
-            print(f"    weeks/matchups failed: {type(e).__name__}: {e}")
 
-        try:
-            p = (mine or teams[0]).players()[0]
-            print(f"\n  sample player: {g(p, 'name.full')}  pos={g(p, 'display_position')}")
-            print(f"    player attrs: {sorted(k for k in vars(p) if not k.startswith('_'))}")
-            print(f"    get_points(): {p.get_points()}")
-        except Exception as e:
-            print(f"    player probe failed: {type(e).__name__}: {e}")
-    print("\nPaste this output back and the recap gets written against real shapes.")
+def check(ctx, season: int, names: list[str]) -> int:
+    import requests
+
+    rows = []
+    try:
+        lgs = [(lg.league_key, getattr(lg, "name", lg.league_key)) for lg in leagues(ctx, season)]
+        for name in names:
+            last = norm(name).split()[-1]  # Yahoo search matches name substrings; full names with punctuation miss
+            rows.append([name] + [
+                availability(ctx.make_request(f"league/{key}/players;search={quote(last)}/ownership"), name)
+                for key, _ in lgs
+            ])
+    except requests.HTTPError as e:
+        code = e.response.status_code if e.response is not None else "?"
+        if code == 429:
+            sys.exit("Yahoo rate limit (429). Stopping - try again later, do not loop (s2c-v).")
+        if code == 403:
+            sys.exit("403: this app is not authorized for the Fantasy API yet. Waiting on Yahoo's activation (s2a).")
+        raise
+
+    w = max([len(n) for n in names] + [6])
+    cols = [n[:14] for _, n in lgs]
+    print(f"{'Player':<{w}}  " + "  ".join(f"{c:<14}" for c in cols))
+    for r in rows:
+        print(f"{r[0]:<{w}}  " + "  ".join(f"{v:<14}" for v in r[1:]))
+    print(f"\nFA = claim now | waivers = claim with priority | taken = owned | ? = not found\n{ATTRIBUTION}")
     return 0
 
 
-def sync(season: int) -> int:
-    """Write, per league: my roster (for weekly.py) and every rostered player
-    (so the waiver list can exclude players nobody can actually claim)."""
-    ctx = connect()
-    for lg in leagues(ctx, season):
-        lid = g(lg, "league_id", default="unknown")
-        mine = my_team(lg)
-        if mine:
-            names = [g(p, "name.full", default="?") for p in mine.players()]
-            f = HERE / f"roster_{lid}.txt"
-            f.write_text(
-                f"# {g(lg, 'name')} (league {lid}) - synced {date.today()} by yahoo.py --sync\n"
-                "# Do not hand-edit; re-run --sync after any add or drop.\n"
-                + "\n".join(names) + "\n",
-                encoding="utf-8",
-            )
-            print(f"{f.name}: {len(names)} players")
+def probe(ctx, season: int) -> int:
+    """Field names and types only - safe to paste to anyone, including an AI assistant."""
+    def shape(label, obj):
+        print(f"{label}:")
+        for k in sorted(k for k in vars(obj) if not k.startswith("_")):
+            print(f"  {k}: {type(getattr(obj, k)).__name__}")
 
-        owned = sorted({g(p, "name.full", default="?") for t in lg.teams() for p in t.players()})
-        f = HERE / f"rostered_{lid}.txt"
-        f.write_text("\n".join(owned) + "\n", encoding="utf-8")
-        print(f"{f.name}: {len(owned)} players owned league-wide")
-        print(f"  -> uv run weekly.py --roster roster_{lid}.txt --exclude rostered_{lid}.txt")
+    lgs = leagues(ctx, season)
+    print(f"{len(lgs)} league(s)")
+    shape("league", lgs[0])
+    from yahoofantasy.api.parse import parse_response
+    xml = ctx.make_request(f"league/{lgs[0].league_key}/players;search=smith/ownership")
+    print("ownership response top-level keys:", list(parse_response(xml)["fantasy_content"]["league"]))
+    print(ATTRIBUTION)
     return 0
 
 
-def recap(season: int, week: int | None) -> int:
-    ctx = connect()
-    out = [
-        f"# Fantasy Football {season} - Weekly Recap",
-        "",
-        f"> Generated {date.today().isoformat()} by `yahoo.py --recap`. Overwritten each run - do not hand-edit.",
-        "> League state and results. Role trends and waiver targets live in [[Fantasy Football 2026 - Weekly Report]].",
-        "",
-    ]
+def selftest() -> int:
+    """Offline. Fails if parsing breaks or if --check writes anything anywhere."""
+    xml = ('<?xml version="1.0"?><fantasy_content><league><league_key>461.l.1</league_key><players count="2">'
+           '<player><name><full>DJ Moore</full></name><ownership><ownership_type>freeagents</ownership_type></ownership></player>'
+           '<player><name><full>Skyy Moore</full></name><ownership><ownership_type>team</ownership_type></ownership></player>'
+           '</players></league></fantasy_content>')
+    assert availability(xml, "DJ Moore") == "FA"
+    assert availability(xml, "Skyy Moore") == "taken"
+    assert availability(xml, "Nobody Moore") == "?"
 
-    for lg in leagues(ctx, season):
-        wk = week or int(g(lg, "current_week", default=1) or 1)
-        # current_week is the week in progress; the last finished one is the one to read.
-        wk = max(1, wk - 1) if week is None else wk
-        out += [f"## {g(lg, 'name')} - week {wk}", ""]
+    class League:
+        league_key, name = "461.l.1", "Test League"
 
-        try:
-            weeks = {int(g(w, "week_num", "week", default=i + 1)): w for i, w in enumerate(lg.weeks())}
-            wkobj = weeks.get(wk)
-        except Exception as e:
-            out += [f"*Could not read weeks: {type(e).__name__}: {e}*", ""]
-            continue
-        if wkobj is None:
-            out += [f"*No data for week {wk} yet.*", ""]
-            continue
+    class FakeCtx:
+        def get_leagues(self, game, season):
+            return [League()]
 
-        mine = my_team(lg)
-        myname = g(mine, "name", default=None)
+        def make_request(self, url):
+            return xml
 
-        out += ["| | Team | Pts | | Team | Pts |", "|:--:|---|---:|:--:|---|---:|"]
-        scores: list[tuple[str, float]] = []
-        for m in wkobj.matchups:
-            t1, t2 = g(m, "team1"), g(m, "team2")
-            n1, n2 = g(t1, "name", default="?"), g(t2, "name", default="?")
-            p1 = float(g(m, "team1.team_points.total", "team1_points", default=0) or 0)
-            p2 = float(g(m, "team2.team_points.total", "team2_points", default=0) or 0)
-            scores += [(n1, p1), (n2, p2)]
-            star = "**" if myname in (n1, n2) else ""
-            mark1, mark2 = ("W" if p1 > p2 else "L"), ("W" if p2 > p1 else "L")
-            out.append(f"| {mark1} | {star}{n1}{star} | {p1:.1f} | {mark2} | {star}{n2}{star} | {p2:.1f} |")
-
-        if scores:
-            hi = max(scores, key=lambda s: s[1])
-            lo = min(scores, key=lambda s: s[1])
-            avg = sum(s[1] for s in scores) / len(scores)
-            out += ["", f"High **{hi[0]} {hi[1]:.1f}** · low {lo[0]} {lo[1]:.1f} · league average {avg:.1f}", ""]
-
-        # Who performed well - every rostered player in the league, by actual Yahoo points.
-        perf: list[tuple[float, str, str, str]] = []
-        for t in lg.teams():
-            tn = g(t, "name", default="?")
-            for p in t.players():
-                try:
-                    pts = float(p.get_points() or 0)
-                except Exception:
-                    continue
-                perf.append((pts, g(p, "name.full", default="?"), g(p, "display_position", default="?"), tn))
-        if perf:
-            perf.sort(reverse=True)
-            out += ["**Top 10 scorers, league-wide**", "", "| Player | Pos | Pts | Roster |", "|---|---|---:|---|"]
-            for pts, nm, pos, tn in perf[:10]:
-                star = "**" if tn == myname else ""
-                out.append(f"| {nm} | {pos} | {pts:.1f} | {star}{tn}{star} |")
-            if myname:
-                out += ["", f"**{myname} - every starter and bench player**", "", "| Player | Pos | Pts |", "|---|---|---:|"]
-                for pts, nm, pos, tn in [x for x in perf if x[3] == myname]:
-                    out.append(f"| {nm} | {pos} | {pts:.1f} |")
-
-        try:
-            out += ["", "**Standings**", "", "| # | Team | Rec |", "|--:|---|---|"]
-            for t in lg.standings():
-                o = g(t, "team_standings.outcome_totals")
-                rec = f"{g(o, 'wins', default=0)}-{g(o, 'losses', default=0)}-{g(o, 'ties', default=0)}" if o else "?"
-                nm = g(t, "name", default="?")
-                star = "**" if nm == myname else ""
-                out.append(f"| {g(t, 'team_standings.rank', default='?')} | {star}{nm}{star} | {rec} |")
-        except Exception as e:
-            out += [f"*standings unavailable: {type(e).__name__}*"]
-        out.append("")
-
-    out += ["---", "*Generated by `source/repos/nfl-vault/yahoo.py`. Method: [[Fantasy Football - The Weekly Lineup Decision]]. Settings: [[Fantasy Football 2026 - Season Tracker]].*",
-            "*Fantasy data provided by [Yahoo Fantasy](https://football.fantasysports.yahoo.com/).*", ""]
-    text = "\n".join(out)
-    print(text)
-    RECAP.parent.mkdir(parents=True, exist_ok=True)
-    RECAP.write_text(text, encoding="utf-8")
-    print(f"\n-> written to {RECAP}", file=sys.stderr)
+    watched = [HERE, REPORT.parent]
+    before = {d: sorted(p.name for p in d.iterdir()) for d in watched if d.exists()}
+    check(FakeCtx(), 2025, ["DJ Moore", "Skyy Moore"])
+    after = {d: sorted(p.name for p in d.iterdir()) for d in watched if d.exists()}
+    assert before == after, "check() wrote a file - Yahoo data must not be stored (s2c-vii)"
+    print("OK  parsing, and --check writes nothing")
     return 0
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--season", type=int, default=SEASON_DEFAULT)
-    p.add_argument("--week", type=int, default=None)
-    p.add_argument("--probe", action="store_true", help="dump what Yahoo returns - run this first")
-    p.add_argument("--sync", action="store_true", help="write roster_*.txt and rostered_*.txt")
-    p.add_argument("--recap", action="store_true", help="write the weekly recap into the vault")
+    p.add_argument("--check", nargs="*", metavar="NAME", help="availability of these players (default: report's risers)")
+    p.add_argument("--probe", action="store_true", help="field names and types only")
+    p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
 
+    if a.selftest:
+        return selftest()
     if a.probe:
-        return probe(a.season)
-    if a.sync:
-        return sync(a.season)
-    if a.recap:
-        return recap(a.season, a.week)
+        return probe(connect(), a.season)
+    if a.check is not None:
+        return check(connect(), a.season, a.check or candidates())
     p.print_help()
     return 0
 

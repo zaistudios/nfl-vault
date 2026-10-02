@@ -146,7 +146,7 @@ def arrow(v) -> str:
     return "UP" if v > 0.07 else "DOWN" if v < -0.07 else "flat"
 
 
-def report(season: int, weeks: int, roster: list[str], owned: list[str] | None = None) -> str:
+def report(season: int, weeks: int, roster: list[str]) -> str:
     try:
         df = build(season)
     except NoSeasonData:
@@ -208,13 +208,10 @@ def report(season: int, weeks: int, roster: list[str], owned: list[str] | None =
     if stale:
         out += ["", f"\\* **did not play in week {latest}** - the line shown is his last game. Check why before starting him."]
 
-    # Waiver candidates: real role, growing, not mine. In a 10-team league most of
-    # these are free - check availability in Yahoo before claiming.
-    # Anyone rostered anywhere in the league cannot be claimed, so drop them. Without
-    # the Yahoo sync this list is empty and the table is a shortlist to check by hand.
-    taken = {norm(n) for n in (owned or [])} | set(keys)
+    # Waiver candidates: real role, growing, not mine. Availability is checked live by
+    # `yahoo.py --check`, never stored here - the Yahoo agreement forbids storing its data.
     risers = (
-        t.filter(~pl.col("key").is_in(list(taken)))
+        t.filter(~pl.col("key").is_in(list(keys)))
         .filter(pl.col("position").is_in(["RB", "WR", "TE"]))
         .filter((pl.col("offense_pct") >= 0.35) | (pl.col("targets") >= 5) | (pl.col("carries") >= 8))
         # has to have been playing already, or the list fills with rest-week fill-ins
@@ -226,10 +223,11 @@ def report(season: int, weeks: int, roster: list[str], owned: list[str] | None =
 
     out += [
         "",
-        "## Role risers - waiver targets" + (" (free agents only)" if owned else " (not filtered for availability)"),
+        "## Role risers - waiver targets",
         "",
-        "*Ranked by snap-share and target-share gain. Rolling waiver priority, so spend the slot on a role change, not a streamer.*"
-        + ("" if owned else "\n\n*No rostered-player list supplied, so some of these are owned. Run `yahoo.py --sync`, then pass `--exclude rostered_<id>.txt`.*"),
+        "*Ranked by snap-share and target-share gain. Rolling waiver priority, so spend the slot on a role change, not a streamer.*",
+        "",
+        "*Some are owned. Check who is claimable in your own terminal: `uv run yahoo.py --check`.*",
         "",
         "| Player | Pos | Tm | Pts | Snap% | d Snap | Tgt share | d Tgt | Car |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|",
@@ -380,8 +378,6 @@ def main() -> int:
     p.add_argument("--season", type=int, default=date.today().year if date.today().month >= 9 else date.today().year - 1)
     p.add_argument("--weeks", type=int, default=3, help="lookback window including the latest week")
     p.add_argument("--roster", type=Path, default=HERE / "roster.txt")
-    p.add_argument("--exclude", type=Path, default=None,
-                   help="file of players rostered league-wide (from yahoo.py --sync); they are dropped from the waiver list")
     p.add_argument("--selftest", action="store_true")
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--export", action="store_true", help="write all nflverse seasons to db/ as named parquet")
@@ -398,8 +394,7 @@ def main() -> int:
             print(f"SKIP  no {a.season} data published yet - run --selftest --season {a.season - 1}")
             return 0
 
-    owned = load_roster(a.exclude) if a.exclude else None
-    text = report(a.season, a.weeks, roster, owned)
+    text = report(a.season, a.weeks, roster)
     print(text)
     if not a.no_write:
         REPORT.parent.mkdir(parents=True, exist_ok=True)

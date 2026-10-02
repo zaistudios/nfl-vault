@@ -2,5 +2,3 @@ data/
 db/
 __pycache__/
 *.yahoofantasy
-roster_*.txt
-rostered_*.txt
