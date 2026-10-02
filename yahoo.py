@@ -59,6 +59,12 @@ def connect():
 
 
 def leagues(ctx, season: int):
+    from yahoofantasy.api.games import _find_game_id, games
+
+    # ponytail: yahoofantasy's season->game_id table is hardcoded and lags new seasons;
+    # ask Yahoo for the missing one. Drop this when the library ships the year.
+    if str(season) not in games["nfl"]:
+        games["nfl"][str(season)] = int(_find_game_id("nfl", season, ctx))
     ls = ctx.get_leagues("nfl", season)
     if not ls:
         sys.exit(f"No NFL leagues found for {season}. Wrong season, or the app lacks Fantasy Sports permission.")
