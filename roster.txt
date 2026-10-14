@@ -1,24 +1,24 @@
 # Fantasy Footballz (Yahoo 1433436) - Zane's roster.
 # One player per line. '#' starts a comment. Edit after every add/drop.
 # Names must match nflverse; run `uv run weekly.py --selftest` to catch typos.
-# Updated 2026-10-01 from Team_Wk4.pdf.
+# Updated 2026-10-14 from team wk6.pdf, plus the Pat trade (Chase, J. Johnson for
+# McBride, Evans), which processes 2026-10-17.
 
 # --- starters ---
-Trevor Lawrence
-Kenneth Walker III
-Chuba Hubbard
-Ja'Marr Chase
-Nico Collins
-Juwan Johnson
 Javonte Williams
+Kenneth Walker III
+Nico Collins
+Malik Nabers
+Trey McBride
+Chuba Hubbard
 
 # --- bench ---
+Mike Evans
 Dalton Kincaid
-Lamar Jackson
+Emanuel Wilson
 Tetairoa McMillan
-Ladd McConkey
-Jadarian Price
-Quinshon Judkins
+Lamar Jackson
+Caleb Williams
 
 # K and DST are not in nflverse player_stats the same way and are streamed anyway,
-# so they are deliberately left out: Jake Bates (K, DET), Vikings (DEF).
+# so they are deliberately left out: Eddy Pineiro (K, SF), Colts / Vikings (DEF).
