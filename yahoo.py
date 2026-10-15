@@ -120,7 +120,10 @@ def check(ctx, season: int, names: list[str]) -> int:
         if code == 429:
             sys.exit("Yahoo rate limit (429). Stopping - try again later, do not loop (s2c-v).")
         if code == 403:
-            sys.exit("403: this app is not authorized for the Fantasy API yet. Waiting on Yahoo's activation (s2a).")
+            body = e.response.text if e.response is not None else ""
+            body = (re.findall(r"<description>(.*?)</description>", body, re.S) or [body[-800:]])[0]
+            sys.exit(f"403 from Yahoo:\n{body}\n\n'not authorized' = the app (client ID) lacks Fantasy access, not your login.\n"
+                     "Check developer.yahoo.com/apps: Fantasy Sports Read permission, and that this is the approved app.")
         raise
 
     w = max([len(n) for n in names] + [6])
